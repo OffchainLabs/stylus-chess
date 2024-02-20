@@ -31,6 +31,10 @@ const ROOK: u8 = 4;
 const QUEEN: u8 = 5;
 const KING: u8 = 6;
 
+/// Bit masks
+const COLOR_MASK: u8 = 1;
+const PIECE_TYPE_MASK: u8 = 7;
+
 sol_storage! {
   #[entrypoint]
   pub struct StylusChess {
@@ -54,35 +58,26 @@ sol_storage! {
     /// All the info needed to rebuild the board
     uint256 board_state;
   }
-
-  // pub struct StorageChessPiece {
-  //   /// 1 for WHITE; 2 for BLACK
-  //   uint1 color;
-  //   /// 1 = Pawn, 2 = Knight, 3 = Bishop, 4 = Rook, 5 = Queen, 6 = King
-  //   uint3 piece_type;
-  // }
 }
-
-// sol! {
-//   pub struct GameInfoReturnType {}
-// }
 
 type GameInfoReturnType = (Address, Address, U256, U256);
 type GamePiecesReturnType = Vec<(U256, U256, U256, U256)>;
 
-// struct ChessPiece {
-//     color: u8,
-//     row: u8,
-//     col: u8,
-//     piece_type: u8,
-// }
-
 #[external]
 impl StylusChess {
     /// Gets the game number from storage.
-    // pub fn total_games(&self) -> Result<U64, Vec<u8>> {
-    //     Ok(self.total_games.get())
-    // }
+    pub fn total_games(&self) -> Result<U256, Vec<u8>> {
+        Ok(U256::from(self.total_games.get()))
+    }
+
+    pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
+        let game_info = self.games.get(U64::from(game_number));
+        let board_state = game_info.board_state.get();
+        let board = self.deserialize_board(board_state);
+        self.print_board(&board);
+
+        Ok(())
+    }
 
     /// Game info
     pub fn game_by_number(&self, game_number: U256) -> Result<GameInfoReturnType, Vec<u8>> {
@@ -155,9 +150,45 @@ impl StylusChess {
         self.pending_game.set(U64::from(0));
     }
 
-    // fn deserialize_board(&self, board_state: U256) -> Board {
+    fn deserialize_board(&self, board_state: U256) -> Board {
+        let mut board_builder: BoardBuilder = BoardBuilder::default();
+        board_builder = board_builder.enable_castling();
 
-    // }
+        for row in 0..8_u8 {
+            for col in 0..8_u8 {
+                let base_offset: usize = ((row * 8 + col) * 4).into();
+                let color_offset: usize = base_offset + 3;
+                let piece_type_offset: usize = base_offset;
+
+                console!("row: {row}; col: {col}");
+
+                let color = (board_state >> color_offset) & U256::from(COLOR_MASK);
+                let piece_type = (board_state >> piece_type_offset) & U256::from(PIECE_TYPE_MASK);
+
+                console!("color: {color}; piece_type: {piece_type}");
+
+                if piece_type != U256::ZERO {
+                    let position = Position::new(row.into(), col.into());
+                    let color_enum = match U8::from(color).to() {
+                        WHITE => Color::White,
+                        _ => Color::Black,
+                    };
+                    let piece = match U8::from(piece_type).to() {
+                        KNIGHT => Piece::Knight(color_enum, position),
+                        BISHOP => Piece::Bishop(color_enum, position),
+                        ROOK => Piece::Rook(color_enum, position),
+                        QUEEN => Piece::Queen(color_enum, position),
+                        KING => Piece::King(color_enum, position),
+                        _ => Piece::Pawn(color_enum, position),
+                    };
+
+                    board_builder = board_builder.piece(piece);
+                }
+            }
+        }
+
+        board_builder.build()
+    }
 
     fn serialize_board(&self, board: Board) -> U256 {
         let mut board_state = U256::from(0);
@@ -194,6 +225,67 @@ impl StylusChess {
         }
 
         board_state
+    }
+
+    fn print_board(&self, board: &Board) {
+        let turn = board.get_current_player_color();
+        let abc = if turn == Color::White {
+            "abcdefgh"
+        } else {
+            "hgfedcba"
+        };
+
+        console!("   {}", abc);
+        console!("  ╔════════╗");
+        let mut square_color = !turn;
+        let height = 8;
+        let width = 8;
+
+        for row in 0..height {
+            let print_row = match turn {
+                Color::White => height - row - 1,
+                Color::Black => row,
+            };
+            let mut row_text = String::new();
+            let row_label = format!("{} ║", print_row + 1);
+            row_text.push_str(row_label.as_str());
+
+            for col in 0..width {
+                let print_col = match turn {
+                    Color::Black => width - col - 1,
+                    Color::White => col,
+                };
+
+                let pos = Position::new(print_row, print_col);
+
+                let s = if let Some(piece) = board.get_piece(pos) {
+                    piece.to_string()
+                } else {
+                    String::from(match square_color {
+                        Color::White => "░",
+                        Color::Black => "▓",
+                    })
+                };
+                if Some(pos) == board.get_en_passant() {
+                    row_text.push_str(format!("\x1b[34m{}\x1b[m\x1b[0m", s).as_str());
+                } else if board.is_threatened(pos, turn) {
+                    row_text.push_str(format!("\x1b[31m{}\x1b[m\x1b[0m", s).as_str());
+                } else if board.is_threatened(pos, !turn) {
+                    row_text.push_str(format!("\x1b[32m{}\x1b[m\x1b[0m", s).as_str());
+                } else {
+                    row_text.push_str(s.as_str());
+                }
+
+                square_color = !square_color;
+            }
+            row_text.push('║');
+            console!("{}", row_text);
+
+            square_color = !square_color;
+        }
+
+        console!("  ╚════════╝");
+        console!("   {}", abc);
     }
 }
 
