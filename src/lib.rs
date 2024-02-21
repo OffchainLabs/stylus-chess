@@ -9,7 +9,6 @@ static ALLOC: mini_alloc::MiniAlloc = mini_alloc::MiniAlloc::INIT;
 use alloy_primitives::{Address, U8};
 use chess_engine::{Board, BoardBuilder, Color, GameResult, Move, Piece, Position};
 
-use stylus_sdk::console;
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
 use stylus_sdk::{alloy_primitives::U256, msg, prelude::*};
 
@@ -55,7 +54,7 @@ sol_storage! {
     /// PENDING (waiting second player) = 0, CONTINUING = 1, STALEMATE = 3, or VICTORY = 4
     uint8 game_status;
     /// Player turn 0 = WHITE; 1 = BLACK
-    uint8 player_turn;
+    uint8 turn_color;
     /// 0 = WHITE; 1 = BLACK
     uint8 victor;
     /// All the info needed to rebuild the board
@@ -70,41 +69,25 @@ impl StylusChess {
         Ok(U256::from(self.total_games.get()))
     }
 
-    // pub fn get_legal_moves(&self, game_number: U256) -> Result<(), Vec<u8>> {
-    //     let current_board = self.get_board_from_game_number(U64::from(game_number));
-    //     let legal_moves = current_board.get_legal_moves();
-
-    //     for lm in legal_moves {
-    //         if let Move::Piece(from_pos, to_pos) = lm {
-    //             console!(
-    //                 "MOVE FROM: ({},{}) ... MOVE TO: ({},{})",
-    //                 from_pos.get_row(),
-    //                 from_pos.get_col(),
-    //                 to_pos.get_row(),
-    //                 to_pos.get_col()
-    //             );
-    //         }
-    //     }
-
-    //     Ok(())
-    // }
-
     /// Get the color of the current player
     pub fn get_turn_color(&self, game_number: U256) -> Result<U256, Vec<u8>> {
-        let current_board = self.get_board_from_game_number(game_number);
-        let current_color = match current_board.get_turn_color() {
-            Color::White => U256::from(WHITE),
-            Color::Black => U256::from(BLACK),
-        };
+        let game_info = self.games.get(game_number);
+        let turn_color = game_info.turn_color.get();
 
-        Ok(current_color)
+        Ok(U256::from(turn_color))
     }
 
     /// Get the address of the current player
     pub fn get_current_player(&self, game_number: U256) -> Result<Address, Vec<u8>> {
-        let board = self.get_board_from_game_number(game_number);
-        let current_player = self.get_current_player_address(game_number, board);
-        Ok(current_player)
+        let game_info = self.games.get(game_number);
+        let turn_color = game_info.turn_color.get();
+
+        let player_address = match turn_color == U8::from(WHITE) {
+            true => game_info.player_one.get(),
+            false => game_info.player_two.get(),
+        };
+
+        Ok(player_address)
     }
 
     /// Play a Move
@@ -116,8 +99,6 @@ impl StylusChess {
         to_row: U256,
         to_col: U256,
     ) -> Result<U256, Vec<u8>> {
-        // Board state at start
-        // let game_ = self.games.get(game_number);
         let board = self.get_board_from_game_number(game_number);
         let current_player = self.get_current_player_address(game_number, board);
         let game_data = self.games.get(game_number);
@@ -140,16 +121,15 @@ impl StylusChess {
         let response = match move_result {
             GameResult::Continuing(new_board) => {
                 let new_board_state = self.serialize_board(new_board);
-                console!("Continuing board after play: {new_board_state}");
                 let mut game_setter = self.games.setter(game_number);
                 game_setter.board_state.set(new_board_state);
 
                 match new_board.get_turn_color() {
                     Color::White => {
-                        game_setter.player_turn.set(U8::from(WHITE));
+                        game_setter.turn_color.set(U8::from(WHITE));
                     }
                     Color::Black => {
-                        game_setter.player_turn.set(U8::from(BLACK));
+                        game_setter.turn_color.set(U8::from(BLACK));
                     }
                 }
 
@@ -172,10 +152,7 @@ impl StylusChess {
 
                 U256::from(STALEMATE)
             }
-            _ => {
-                console!("Illegal move attempted...");
-                U256::from(ILLEGAL_MOVE)
-            }
+            _ => U256::from(ILLEGAL_MOVE),
         };
 
         Ok(response)
@@ -245,7 +222,7 @@ impl StylusChess {
 
     fn get_board_from_game_number(&self, game_number: U256) -> Board {
         let game_info = self.games.get(game_number);
-        let color = game_info.player_turn.get();
+        let color = game_info.turn_color.get();
         let board_state = game_info.board_state.get();
         let board = self.deserialize_board(board_state);
 
