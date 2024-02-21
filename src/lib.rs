@@ -6,15 +6,15 @@ extern crate alloc;
 #[global_allocator]
 static ALLOC: mini_alloc::MiniAlloc = mini_alloc::MiniAlloc::INIT;
 
-use alloy_primitives::{hex, Address, Uint, B256, U64, U8};
-use chess_engine::{Board, BoardBuilder, Color, Evaluate, GameResult, Move, Piece, Position};
+use alloy_primitives::{Address, U8};
+use chess_engine::{Board, BoardBuilder, Color, GameResult, Move, Piece, Position};
 
 use stylus_sdk::console;
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
-use stylus_sdk::{alloy_primitives::U256, msg, prelude::*, storage::StorageU8};
+use stylus_sdk::{alloy_primitives::U256, msg, prelude::*};
 
 /// Game Status
-const PENDING: u8 = 0;
+// const PENDING: u8 = 0;
 const CONTINUING: u8 = 1;
 const ILLEGAL_MOVE: u8 = 2;
 const STALEMATE: u8 = 3;
@@ -40,11 +40,11 @@ sol_storage! {
   #[entrypoint]
   pub struct StylusChess {
     /// Total games of chess started
-    uint64 total_games;
+    uint256 total_games;
     /// Used to store a single pending game while waiting for a player two to join.
-    uint64 pending_game;
+    uint256 pending_game;
     /// Stores info for each chess game
-    mapping(uint64 => GameInfo) games;
+    mapping(uint256 => GameInfo) games;
   }
 
   pub struct GameInfo {
@@ -54,14 +54,14 @@ sol_storage! {
     address player_two;
     /// PENDING (waiting second player) = 0, CONTINUING = 1, STALEMATE = 3, or VICTORY = 4
     uint8 game_status;
+    /// Player turn 0 = WHITE; 1 = BLACK
+    uint8 player_turn;
     /// 0 = WHITE; 1 = BLACK
     uint8 victor;
     /// All the info needed to rebuild the board
     uint256 board_state;
   }
 }
-
-type GameInfoReturnType = (Address, Address, U256, U256);
 
 #[external]
 impl StylusChess {
@@ -70,9 +70,28 @@ impl StylusChess {
         Ok(U256::from(self.total_games.get()))
     }
 
+    // pub fn get_legal_moves(&self, game_number: U256) -> Result<(), Vec<u8>> {
+    //     let current_board = self.get_board_from_game_number(U64::from(game_number));
+    //     let legal_moves = current_board.get_legal_moves();
+
+    //     for lm in legal_moves {
+    //         if let Move::Piece(from_pos, to_pos) = lm {
+    //             console!(
+    //                 "MOVE FROM: ({},{}) ... MOVE TO: ({},{})",
+    //                 from_pos.get_row(),
+    //                 from_pos.get_col(),
+    //                 to_pos.get_row(),
+    //                 to_pos.get_col()
+    //             );
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
     /// Get the color of the current player
     pub fn get_turn_color(&self, game_number: U256) -> Result<U256, Vec<u8>> {
-        let current_board = self.get_board_from_game_number(U64::from(game_number));
+        let current_board = self.get_board_from_game_number(game_number);
         let current_color = match current_board.get_turn_color() {
             Color::White => U256::from(WHITE),
             Color::Black => U256::from(BLACK),
@@ -83,7 +102,8 @@ impl StylusChess {
 
     /// Get the address of the current player
     pub fn get_current_player(&self, game_number: U256) -> Result<Address, Vec<u8>> {
-        let current_player = self.get_current_player_address(U64::from(game_number));
+        let board = self.get_board_from_game_number(game_number);
+        let current_player = self.get_current_player_address(game_number, board);
         Ok(current_player)
     }
 
@@ -91,43 +111,71 @@ impl StylusChess {
     pub fn play_move(
         &mut self,
         game_number: U256,
-        from_pos: (U256, U256),
-        to_pos: (U256, U256),
+        from_row: U256,
+        from_col: U256,
+        to_row: U256,
+        to_col: U256,
     ) -> Result<U256, Vec<u8>> {
-        let current_player = self.get_current_player_address(U64::from(game_number));
+        // Board state at start
+        // let game_ = self.games.get(game_number);
+        let board = self.get_board_from_game_number(game_number);
+        let current_player = self.get_current_player_address(game_number, board);
+        let game_data = self.games.get(game_number);
 
+        // only allow the current player address to execute this call
         if msg::sender() != current_player {
             return Ok(U256::from(ILLEGAL_MOVE));
         }
 
-        let board = self.get_board_from_game_number(U64::from(game_number));
+        // don't continue if game is already over
+        if game_data.game_status.get() != U8::from(CONTINUING) {
+            return Ok(U256::from(ILLEGAL_MOVE));
+        }
 
-        let from_position = Position::new(from_pos.0.to(), from_pos.0.to());
-        let to_position = Position::new(to_pos.0.to(), to_pos.1.to());
+        let from_position = Position::new(from_row.to(), from_col.to());
+        let to_position = Position::new(to_row.to(), to_col.to());
         let player_move = Move::Piece(from_position, to_position);
         let move_result = board.play_move(player_move);
 
-        let mut game_info = self.games.setter(U64::from(game_number));
-
         let response = match move_result {
-            GameResult::Continuing(_) => U256::from(CONTINUING),
+            GameResult::Continuing(new_board) => {
+                let new_board_state = self.serialize_board(new_board);
+                console!("Continuing board after play: {new_board_state}");
+                let mut game_setter = self.games.setter(game_number);
+                game_setter.board_state.set(new_board_state);
+
+                match new_board.get_turn_color() {
+                    Color::White => {
+                        game_setter.player_turn.set(U8::from(WHITE));
+                    }
+                    Color::Black => {
+                        game_setter.player_turn.set(U8::from(BLACK));
+                    }
+                }
+
+                U256::from(CONTINUING)
+            }
             GameResult::Victory(_) => {
                 let current_color = match board.get_turn_color() {
                     Color::White => U8::from(WHITE),
                     Color::Black => U8::from(BLACK),
                 };
-
-                game_info.victor.set(current_color);
-                game_info.game_status.set(U8::from(VICTORY));
+                let mut game_setter = self.games.setter(game_number);
+                game_setter.victor.set(current_color);
+                game_setter.game_status.set(U8::from(VICTORY));
 
                 U256::from(VICTORY)
             }
             GameResult::Stalemate => {
-                game_info.game_status.set(U8::from(STALEMATE));
+                let mut game_setter = self.games.setter(game_number);
+                game_setter.game_status.set(U8::from(STALEMATE));
 
                 U256::from(STALEMATE)
             }
-            _ => U256::from(ILLEGAL_MOVE),
+            _ => {
+                console!("Illegal move attempted...");
+                U256::from(ILLEGAL_MOVE)
+            }
         };
 
         Ok(response)
@@ -136,34 +184,34 @@ impl StylusChess {
     // pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
     //     let game_info = self.games.get(U64::from(game_number));
     //     let board_state = game_info.board_state.get();
-    //     let board = self.deserialize_board(board_state);
+    //     let board: Board = self.deserialize_board(board_state);
     //     self.print_board(&board);
 
     //     Ok(())
     // }
 
     /// Game info
-    pub fn game_by_number(&self, game_number: U256) -> Result<GameInfoReturnType, Vec<u8>> {
-        let game_info = self.games.getter(U64::from(game_number));
+    // pub fn game_by_number(&self, game_number: U256) -> Result<GameInfoReturnType, Vec<u8>> {
+    //     let game_info = self.games.getter(game_number);
 
-        let player_one = game_info.player_one.get();
-        let player_two = game_info.player_two.get();
-        let game_status = game_info.game_status.get();
-        let victor = game_info.victor.get();
+    //     let player_one = game_info.player_one.get();
+    //     let player_two = game_info.player_two.get();
+    //     let game_status = game_info.game_status.get();
+    //     let victor = game_info.victor.get();
 
-        let data: GameInfoReturnType = (
-            player_one,
-            player_two,
-            U256::from(game_status),
-            U256::from(victor),
-        );
+    //     let data: GameInfoReturnType = (
+    //         player_one,
+    //         player_two,
+    //         U256::from(game_status),
+    //         U256::from(victor),
+    //     );
 
-        Ok(data)
-    }
+    //     Ok(data)
+    // }
 
     /// The board layout for a particular game
-    pub fn game_pieces_by_game_number(&self, game_number: U256) -> Result<U256, Vec<u8>> {
-        let game_info = self.games.get(U64::from(game_number));
+    pub fn board_state_by_game_number(&self, game_number: U256) -> Result<U256, Vec<u8>> {
+        let game_info = self.games.get(game_number);
         Ok(game_info.board_state.get())
     }
 
@@ -173,7 +221,7 @@ impl StylusChess {
         let pending_game = self.pending_game.get();
 
         // Sets pending_game number and initializes a new board
-        if pending_game == U64::from(0) {
+        if pending_game == U256::from(0) {
             let game_number = self.get_next_game_number();
             self.pending_game.set(game_number);
             self.create_game(game_number);
@@ -187,29 +235,35 @@ impl StylusChess {
 }
 
 impl StylusChess {
-    pub fn get_current_player_address(&self, game_number: U64) -> Address {
-        let game_info = self.games.get(U64::from(game_number));
-        let current_board = self.get_board_from_game_number(U64::from(game_number));
-        let current_player = match current_board.get_turn_color() {
+    pub fn get_current_player_address(&self, game_number: U256, current_board: Board) -> Address {
+        let game_info = self.games.get(game_number);
+        match current_board.get_turn_color() {
             Color::White => game_info.player_one.get(),
             Color::Black => game_info.player_two.get(),
-        };
-        current_player
+        }
     }
 
-    fn get_board_from_game_number(&self, game_number: U64) -> Board {
+    fn get_board_from_game_number(&self, game_number: U256) -> Board {
         let game_info = self.games.get(game_number);
+        let color = game_info.player_turn.get();
         let board_state = game_info.board_state.get();
-        self.deserialize_board(board_state)
+        let board = self.deserialize_board(board_state);
+
+        let color_enum = match color == U8::from(WHITE) {
+            true => Color::White,
+            false => Color::Black,
+        };
+
+        board.set_turn(color_enum)
     }
 
-    fn get_next_game_number(&mut self) -> U64 {
-        let game_number = self.total_games.get() + U64::from(1);
+    fn get_next_game_number(&mut self) -> U256 {
+        let game_number = self.total_games.get() + U256::from(1);
         self.total_games.set(game_number);
         game_number
     }
 
-    fn create_game(&mut self, game_number: U64) {
+    fn create_game(&mut self, game_number: U256) {
         let board = Board::default();
         // Set up pieces for serialization
         let board_state = self.serialize_board(board);
@@ -219,14 +273,14 @@ impl StylusChess {
         game_info.board_state.set(board_state);
     }
 
-    fn join_game(&mut self, game_number: U64) {
+    fn join_game(&mut self, game_number: U256) {
         let mut game_info = self.games.setter(game_number);
         // join as player two
         game_info.player_two.set(msg::sender());
         // change status to continuing
         game_info.game_status.set(U8::from(CONTINUING));
         // empty out pending_game
-        self.pending_game.set(U64::from(0));
+        self.pending_game.set(U256::ZERO);
     }
 
     fn deserialize_board(&self, board_state: U256) -> Board {
