@@ -7,7 +7,7 @@ extern crate alloc;
 static ALLOC: mini_alloc::MiniAlloc = mini_alloc::MiniAlloc::INIT;
 
 use alloy_primitives::{hex, Address, Uint, B256, U64, U8};
-use chess_engine::{Board, BoardBuilder, Color, Evaluate, Move, Piece, Position};
+use chess_engine::{Board, BoardBuilder, Color, Evaluate, GameResult, Move, Piece, Position};
 
 use stylus_sdk::console;
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
@@ -16,8 +16,9 @@ use stylus_sdk::{alloy_primitives::U256, msg, prelude::*, storage::StorageU8};
 /// Game Status
 const PENDING: u8 = 0;
 const CONTINUING: u8 = 1;
-const STALEMATE: u8 = 2;
-const VICTORY: u8 = 3;
+const ILLEGAL_MOVE: u8 = 2;
+const STALEMATE: u8 = 3;
+const VICTORY: u8 = 4;
 
 /// Colors
 const WHITE: u8 = 0;
@@ -51,9 +52,9 @@ sol_storage! {
     address player_one;
     /// Player 2 is BLACK
     address player_two;
-    /// PENDING (waiting second player) = 0, CONTINUING = 1, STALEMATE = 2, or VICTORY = 3
+    /// PENDING (waiting second player) = 0, CONTINUING = 1, STALEMATE = 3, or VICTORY = 4
     uint8 game_status;
-    /// 1 = WHITE; 2 = BLACK
+    /// 0 = WHITE; 1 = BLACK
     uint8 victor;
     /// All the info needed to rebuild the board
     uint256 board_state;
@@ -61,7 +62,6 @@ sol_storage! {
 }
 
 type GameInfoReturnType = (Address, Address, U256, U256);
-type GamePiecesReturnType = Vec<(U256, U256, U256, U256)>;
 
 #[external]
 impl StylusChess {
@@ -70,14 +70,77 @@ impl StylusChess {
         Ok(U256::from(self.total_games.get()))
     }
 
-    pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
-        let game_info = self.games.get(U64::from(game_number));
-        let board_state = game_info.board_state.get();
-        let board = self.deserialize_board(board_state);
-        self.print_board(&board);
+    /// Get the color of the current player
+    pub fn get_turn_color(&self, game_number: U256) -> Result<U256, Vec<u8>> {
+        let current_board = self.get_board_from_game_number(U64::from(game_number));
+        let current_color = match current_board.get_turn_color() {
+            Color::White => U256::from(WHITE),
+            Color::Black => U256::from(BLACK),
+        };
 
-        Ok(())
+        Ok(current_color)
     }
+
+    /// Get the address of the current player
+    pub fn get_current_player(&self, game_number: U256) -> Result<Address, Vec<u8>> {
+        let current_player = self.get_current_player_address(U64::from(game_number));
+        Ok(current_player)
+    }
+
+    /// Play a Move
+    pub fn play_move(
+        &mut self,
+        game_number: U256,
+        from_pos: (U256, U256),
+        to_pos: (U256, U256),
+    ) -> Result<U256, Vec<u8>> {
+        let current_player = self.get_current_player_address(U64::from(game_number));
+
+        if msg::sender() != current_player {
+            return Ok(U256::from(ILLEGAL_MOVE));
+        }
+
+        let board = self.get_board_from_game_number(U64::from(game_number));
+
+        let from_position = Position::new(from_pos.0.to(), from_pos.0.to());
+        let to_position = Position::new(to_pos.0.to(), to_pos.1.to());
+        let player_move = Move::Piece(from_position, to_position);
+        let move_result = board.play_move(player_move);
+
+        let mut game_info = self.games.setter(U64::from(game_number));
+
+        let response = match move_result {
+            GameResult::Continuing(_) => U256::from(CONTINUING),
+            GameResult::Victory(_) => {
+                let current_color = match board.get_turn_color() {
+                    Color::White => U8::from(WHITE),
+                    Color::Black => U8::from(BLACK),
+                };
+
+                game_info.victor.set(current_color);
+                game_info.game_status.set(U8::from(VICTORY));
+
+                U256::from(VICTORY)
+            }
+            GameResult::Stalemate => {
+                game_info.game_status.set(U8::from(STALEMATE));
+
+                U256::from(STALEMATE)
+            }
+            _ => U256::from(ILLEGAL_MOVE),
+        };
+
+        Ok(response)
+    }
+
+    // pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
+    //     let game_info = self.games.get(U64::from(game_number));
+    //     let board_state = game_info.board_state.get();
+    //     let board = self.deserialize_board(board_state);
+    //     self.print_board(&board);
+
+    //     Ok(())
+    // }
 
     /// Game info
     pub fn game_by_number(&self, game_number: U256) -> Result<GameInfoReturnType, Vec<u8>> {
@@ -124,6 +187,22 @@ impl StylusChess {
 }
 
 impl StylusChess {
+    pub fn get_current_player_address(&self, game_number: U64) -> Address {
+        let game_info = self.games.get(U64::from(game_number));
+        let current_board = self.get_board_from_game_number(U64::from(game_number));
+        let current_player = match current_board.get_turn_color() {
+            Color::White => game_info.player_one.get(),
+            Color::Black => game_info.player_two.get(),
+        };
+        current_player
+    }
+
+    fn get_board_from_game_number(&self, game_number: U64) -> Board {
+        let game_info = self.games.get(game_number);
+        let board_state = game_info.board_state.get();
+        self.deserialize_board(board_state)
+    }
+
     fn get_next_game_number(&mut self) -> U64 {
         let game_number = self.total_games.get() + U64::from(1);
         self.total_games.set(game_number);
@@ -160,12 +239,8 @@ impl StylusChess {
                 let color_offset: usize = base_offset + 3;
                 let piece_type_offset: usize = base_offset;
 
-                console!("row: {row}; col: {col}");
-
                 let color = (board_state >> color_offset) & U256::from(COLOR_MASK);
                 let piece_type = (board_state >> piece_type_offset) & U256::from(PIECE_TYPE_MASK);
-
-                console!("color: {color}; piece_type: {piece_type}");
 
                 if piece_type != U256::ZERO {
                     let position = Position::new(row.into(), col.into());
@@ -227,102 +302,64 @@ impl StylusChess {
         board_state
     }
 
-    fn print_board(&self, board: &Board) {
-        let turn = board.get_current_player_color();
-        let abc = if turn == Color::White {
-            "abcdefgh"
-        } else {
-            "hgfedcba"
-        };
+    // fn print_board(&self, board: &Board) {
+    //     let turn = board.get_current_player_color();
+    //     let abc = if turn == Color::White {
+    //         "abcdefgh"
+    //     } else {
+    //         "hgfedcba"
+    //     };
 
-        console!("   {}", abc);
-        console!("  ╔════════╗");
-        let mut square_color = !turn;
-        let height = 8;
-        let width = 8;
+    //     console!("   {}", abc);
+    //     console!("  ╔════════╗");
+    //     let mut square_color = !turn;
+    //     let height = 8;
+    //     let width = 8;
 
-        for row in 0..height {
-            let print_row = match turn {
-                Color::White => height - row - 1,
-                Color::Black => row,
-            };
-            let mut row_text = String::new();
-            let row_label = format!("{} ║", print_row + 1);
-            row_text.push_str(row_label.as_str());
+    //     for row in 0..height {
+    //         let print_row = match turn {
+    //             Color::White => height - row - 1,
+    //             Color::Black => row,
+    //         };
+    //         let mut row_text = String::new();
+    //         let row_label = format!("{} ║", print_row + 1);
+    //         row_text.push_str(row_label.as_str());
 
-            for col in 0..width {
-                let print_col = match turn {
-                    Color::Black => width - col - 1,
-                    Color::White => col,
-                };
+    //         for col in 0..width {
+    //             let print_col = match turn {
+    //                 Color::Black => width - col - 1,
+    //                 Color::White => col,
+    //             };
 
-                let pos = Position::new(print_row, print_col);
+    //             let pos = Position::new(print_row, print_col);
 
-                let s = if let Some(piece) = board.get_piece(pos) {
-                    piece.to_string()
-                } else {
-                    String::from(match square_color {
-                        Color::White => "░",
-                        Color::Black => "▓",
-                    })
-                };
-                if Some(pos) == board.get_en_passant() {
-                    row_text.push_str(format!("\x1b[34m{}\x1b[m\x1b[0m", s).as_str());
-                } else if board.is_threatened(pos, turn) {
-                    row_text.push_str(format!("\x1b[31m{}\x1b[m\x1b[0m", s).as_str());
-                } else if board.is_threatened(pos, !turn) {
-                    row_text.push_str(format!("\x1b[32m{}\x1b[m\x1b[0m", s).as_str());
-                } else {
-                    row_text.push_str(s.as_str());
-                }
+    //             let s = if let Some(piece) = board.get_piece(pos) {
+    //                 piece.to_string()
+    //             } else {
+    //                 String::from(match square_color {
+    //                     Color::White => "░",
+    //                     Color::Black => "▓",
+    //                 })
+    //             };
+    //             if Some(pos) == board.get_en_passant() {
+    //                 row_text.push_str(format!("\x1b[34m{}\x1b[m\x1b[0m", s).as_str());
+    //             } else if board.is_threatened(pos, turn) {
+    //                 row_text.push_str(format!("\x1b[31m{}\x1b[m\x1b[0m", s).as_str());
+    //             } else if board.is_threatened(pos, !turn) {
+    //                 row_text.push_str(format!("\x1b[32m{}\x1b[m\x1b[0m", s).as_str());
+    //             } else {
+    //                 row_text.push_str(s.as_str());
+    //             }
 
-                square_color = !square_color;
-            }
-            row_text.push('║');
-            console!("{}", row_text);
+    //             square_color = !square_color;
+    //         }
+    //         row_text.push('║');
+    //         console!("{}", row_text);
 
-            square_color = !square_color;
-        }
+    //         square_color = !square_color;
+    //     }
 
-        console!("  ╚════════╝");
-        console!("   {}", abc);
-    }
+    //     console!("  ╚════════╝");
+    //     console!("   {}", abc);
+    // }
 }
-
-// fn deserialize_board(&self, game_number: U256) -> Board {
-//     let game_info = self.games.getter(game_number);
-
-//     let mut board_builder: BoardBuilder;
-
-//     for row in 0..8_i32 {
-//         for col in 0..8_i32 {
-//             if let Some(row_vec) = game_info.pieces.getter(row) {
-//                 if let Some(storage_piece) = row_vec.getter(col) {
-//                     let color = storage_piece.color.get();
-//                     let piece_type = storage_piece.piece_type.get();
-
-//                     if (color != 0 && piece_type != 0) {
-//                         let pos = Position::new(row, col);
-//                         let color_enum = match color {
-//                             U8::from(WHITE) => Color::White,
-//                             _ => Color::Black,
-//                         };
-
-//                         // let piece = match piece_type {
-//                         //     _ => Piece::Pawn(color_enum, pos),
-//                         //     U8::from(KNIGHT) => Piece::Knight(color_enum, pos),
-//                         //     U8::from(BISHOP) => Piece::Bishop(color_enum, pos),
-//                         //     U8::from(ROOK) => Piece::Rook(color_enum, pos),
-//                         //     U8::from(QUEEN) => Piece::Queen(color_enum, pos),
-//                         //     U8::from(KING) => Piece::King(color_enum, pos),
-//                         // };
-
-//                         // board_builder = board_builder.piece()
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     Board::default()
-// }
