@@ -10,7 +10,7 @@ use alloy_primitives::{Address, U8};
 use chess_engine::{Board, BoardBuilder, Color, GameResult, Move, Piece, Position};
 
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
-use stylus_sdk::{alloy_primitives::U256, msg, prelude::*};
+use stylus_sdk::{alloy_primitives::U256, console, msg, prelude::*};
 
 /// Game Status
 // const PENDING: u8 = 0;
@@ -158,33 +158,14 @@ impl StylusChess {
         Ok(response)
     }
 
-    // pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
-    //     let game_info = self.games.get(U64::from(game_number));
-    //     let board_state = game_info.board_state.get();
-    //     let board: Board = self.deserialize_board(board_state);
-    //     self.print_board(&board);
+    pub fn print_game_state(&self, game_number: U256) -> Result<(), Vec<u8>> {
+        let game_info = self.games.get(U256::from(game_number));
+        let board_state = game_info.board_state.get();
+        let board: Board = self.deserialize_board(board_state);
+        self.print_board(&board);
 
-    //     Ok(())
-    // }
-
-    /// Game info
-    // pub fn game_by_number(&self, game_number: U256) -> Result<GameInfoReturnType, Vec<u8>> {
-    //     let game_info = self.games.getter(game_number);
-
-    //     let player_one = game_info.player_one.get();
-    //     let player_two = game_info.player_two.get();
-    //     let game_status = game_info.game_status.get();
-    //     let victor = game_info.victor.get();
-
-    //     let data: GameInfoReturnType = (
-    //         player_one,
-    //         player_two,
-    //         U256::from(game_status),
-    //         U256::from(victor),
-    //     );
-
-    //     Ok(data)
-    // }
+        Ok(())
+    }
 
     /// The board layout for a particular game
     pub fn board_state_by_game_number(&self, game_number: U256) -> Result<U256, Vec<u8>> {
@@ -333,64 +314,64 @@ impl StylusChess {
         board_state
     }
 
-    // fn print_board(&self, board: &Board) {
-    //     let turn = board.get_current_player_color();
-    //     let abc = if turn == Color::White {
-    //         "abcdefgh"
-    //     } else {
-    //         "hgfedcba"
-    //     };
+    fn print_board(&self, board: &Board) {
+        let turn = board.get_turn_color();
+        let abc = if turn == Color::White {
+            "abcdefgh"
+        } else {
+            "hgfedcba"
+        };
 
-    //     console!("   {}", abc);
-    //     console!("  ╔════════╗");
-    //     let mut square_color = !turn;
-    //     let height = 8;
-    //     let width = 8;
+        console!("   {}", abc);
+        console!("  ╔════════╗");
+        let mut square_color = !turn;
+        let height = 8;
+        let width = 8;
 
-    //     for row in 0..height {
-    //         let print_row = match turn {
-    //             Color::White => height - row - 1,
-    //             Color::Black => row,
-    //         };
-    //         let mut row_text = String::new();
-    //         let row_label = format!("{} ║", print_row + 1);
-    //         row_text.push_str(row_label.as_str());
+        for row in 0..height {
+            let print_row = match turn {
+                Color::White => height - row - 1,
+                Color::Black => row,
+            };
+            let mut row_text = String::new();
+            let row_label = format!("{} ║", print_row + 1);
+            row_text.push_str(row_label.as_str());
 
-    //         for col in 0..width {
-    //             let print_col = match turn {
-    //                 Color::Black => width - col - 1,
-    //                 Color::White => col,
-    //             };
+            for col in 0..width {
+                let print_col = match turn {
+                    Color::Black => width - col - 1,
+                    Color::White => col,
+                };
 
-    //             let pos = Position::new(print_row, print_col);
+                let pos = Position::new(print_row, print_col);
 
-    //             let s = if let Some(piece) = board.get_piece(pos) {
-    //                 piece.to_string()
-    //             } else {
-    //                 String::from(match square_color {
-    //                     Color::White => "░",
-    //                     Color::Black => "▓",
-    //                 })
-    //             };
-    //             if Some(pos) == board.get_en_passant() {
-    //                 row_text.push_str(format!("\x1b[34m{}\x1b[m\x1b[0m", s).as_str());
-    //             } else if board.is_threatened(pos, turn) {
-    //                 row_text.push_str(format!("\x1b[31m{}\x1b[m\x1b[0m", s).as_str());
-    //             } else if board.is_threatened(pos, !turn) {
-    //                 row_text.push_str(format!("\x1b[32m{}\x1b[m\x1b[0m", s).as_str());
-    //             } else {
-    //                 row_text.push_str(s.as_str());
-    //             }
+                let s = if let Some(piece) = board.get_piece(pos) {
+                    piece.to_string()
+                } else {
+                    String::from(match square_color {
+                        Color::White => "░",
+                        Color::Black => "▓",
+                    })
+                };
+                if Some(pos) == board.get_en_passant() {
+                    row_text.push_str(format!("\x1b[34m{}\x1b[m\x1b[0m", s).as_str());
+                } else if board.is_threatened(pos, turn) {
+                    row_text.push_str(format!("\x1b[31m{}\x1b[m\x1b[0m", s).as_str());
+                } else if board.is_threatened(pos, !turn) {
+                    row_text.push_str(format!("\x1b[32m{}\x1b[m\x1b[0m", s).as_str());
+                } else {
+                    row_text.push_str(s.as_str());
+                }
 
-    //             square_color = !square_color;
-    //         }
-    //         row_text.push('║');
-    //         console!("{}", row_text);
+                square_color = !square_color;
+            }
+            row_text.push('║');
+            console!("{}", row_text);
 
-    //         square_color = !square_color;
-    //     }
+            square_color = !square_color;
+        }
 
-    //     console!("  ╚════════╝");
-    //     console!("   {}", abc);
-    // }
+        console!("  ╚════════╝");
+        console!("   {}", abc);
+    }
 }
