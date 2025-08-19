@@ -3,30 +3,26 @@ name = "stylus-chess"
 version = "0.1.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/OffchainLabs/stylus-hello-world"
-repository = "https://github.com/OffchainLabs/stylus-hello-world"
+homepage = "https://github.com/OffchainLabs/stylus-chess"
+repository = "https://github.com/OffchainLabs/stylus-chess"
 keywords = ["arbitrum", "ethereum", "stylus", "alloy"]
-description = "Stylus hello world example"
+description = "Onchain Chess in Rust with Arbitrum Stylus"
 
 [dependencies]
-alloy-primitives = "0.3.1"
-alloy-sol-types = "0.3.1"
-mini-alloc = "0.4.2"
-stylus-sdk = { version = "0.4.2", features = ["debug"]}
-hex = "0.4.3"
+alloy-primitives = { version = "1.0.1", default-features = false }
+alloy-sol-types = { version = "1.0.1", default-features = false }
+stylus-sdk = { version = "0.10.0-beta.1", features = ["debug"]}
 chess-engine = "0.1.2"
 
-[dev-dependencies]
-tokio = { version = "1.12.0", features = ["full"] }
-ethers = "2.0"
-eyre = "0.6.8"
-
 [features]
+default = ["mini-alloc"]
 export-abi = ["stylus-sdk/export-abi"]
 debug = ["stylus-sdk/debug"]
+mini-alloc = ["stylus-sdk/mini-alloc"]
+contract-client-gen = []
 
 [[bin]]
-name = "stylus-hello-world"
+name = "stylus-chess"
 path = "src/main.rs"
 
 [lib]
