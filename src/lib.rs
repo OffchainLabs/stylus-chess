@@ -2,15 +2,10 @@
 #![cfg_attr(not(feature = "export-abi"), no_main)]
 extern crate alloc;
 
-/// Initializes a custom, global allocator for Rust programs compiled to WASM.
-#[global_allocator]
-static ALLOC: mini_alloc::MiniAlloc = mini_alloc::MiniAlloc::INIT;
-
-use alloy_primitives::{Address, U8};
 use chess_engine::{Board, BoardBuilder, Color, GameResult, Move, Piece, Position};
 
 /// Import the Stylus SDK along with alloy primitive types for use in our program.
-use stylus_sdk::{alloy_primitives::U256, console, msg, prelude::*};
+use stylus_sdk::{alloy_primitives::{Address, U256, U8}, console, prelude::*};
 
 /// Game Status
 // const PENDING: u8 = 0;
@@ -62,7 +57,7 @@ sol_storage! {
   }
 }
 
-#[external]
+#[public]
 impl StylusChess {
     /// Gets the game number from storage.
     pub fn total_games(&self) -> Result<U256, Vec<u8>> {
@@ -104,7 +99,7 @@ impl StylusChess {
         let game_data = self.games.get(game_number);
 
         // only allow the current player address to execute this call
-        if msg::sender() != current_player {
+        if self.vm().msg_sender() != current_player {
             return Ok(U256::from(ILLEGAL_MOVE));
         }
 
@@ -222,19 +217,21 @@ impl StylusChess {
     }
 
     fn create_game(&mut self, game_number: U256) {
+        let sender = self.vm().msg_sender();
         let board = Board::default();
         // Set up pieces for serialization
         let board_state = self.serialize_board(board);
 
         let mut game_info = self.games.setter(game_number);
-        game_info.player_one.set(msg::sender());
+        game_info.player_one.set(sender);
         game_info.board_state.set(board_state);
     }
 
     fn join_game(&mut self, game_number: U256) {
+        let sender = self.vm().msg_sender();
         let mut game_info = self.games.setter(game_number);
         // join as player two
-        game_info.player_two.set(msg::sender());
+        game_info.player_two.set(sender);
         // change status to continuing
         game_info.game_status.set(U8::from(CONTINUING));
         // empty out pending_game
